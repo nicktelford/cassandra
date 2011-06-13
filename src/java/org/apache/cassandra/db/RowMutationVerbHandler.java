@@ -60,7 +60,6 @@ public class RowMutationVerbHandler implements IVerbHandler
                         logger_.debug("Adding hint for " + InetAddress.getByName(ByteBufferUtil.string(addressBytes)));
                     RowMutation hintedMutation = new RowMutation(Table.SYSTEM_TABLE, addressBytes);
                     hintedMutation.addHints(rm);
-                    hintedMutation.apply();
                 }
             }
         

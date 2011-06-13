@@ -118,57 +118,6 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
         logger_.debug("Created HHOM instance, registered MBean.");
     }
 
-    private static boolean sendRow(InetAddress endpoint, String tableName, String cfName, ByteBuffer key) throws IOException
-    {
-        if (!Gossiper.instance.isKnownEndpoint(endpoint))
-        {
-            logger_.warn("Hints found for endpoint " + endpoint + " which is not part of the gossip network.  discarding.");
-            return true;
-        }
-
-        if (CFMetaData.getId(tableName, cfName) == null)
-        {
-            logger_.debug("Discarding hints for dropped keyspace or columnfamily {}/{}", tableName, cfName);
-            return true;
-        }
-        Table table = Table.open(tableName);
-        ColumnFamilyStore cfs = table.getColumnFamilyStore(cfName);
-
-        int pageSize = PAGE_SIZE;
-        // send less columns per page if they are very large
-        if (cfs.getMeanColumns() > 0)
-        {
-            int averageColumnSize = (int) (cfs.getMeanRowSize() / cfs.getMeanColumns());
-            pageSize = Math.min(PAGE_SIZE, DatabaseDescriptor.getInMemoryCompactionLimit() / averageColumnSize);
-            pageSize = Math.max(2, pageSize); // page size of 1 does not allow actual paging b/c of >= behavior on startColumn
-            logger_.debug("average hinted-row column size is {}; using pageSize of {}", averageColumnSize, pageSize);
-        }
-
-        DecoratedKey<?> dkey = StorageService.getPartitioner().decorateKey(key);
-        ByteBuffer startColumn = ByteBufferUtil.EMPTY_BYTE_BUFFER;
-        while (true)
-        {
-            QueryFilter filter = QueryFilter.getSliceFilter(dkey, new QueryPath(cfs.getColumnFamilyName()), startColumn, ByteBufferUtil.EMPTY_BYTE_BUFFER, false, pageSize);
-            ColumnFamily cf = cfs.getColumnFamily(filter);
-            if (pagingFinished(cf, startColumn))
-                break;
-            if (cf.getColumnNames().isEmpty())
-            {
-                logger_.debug("Nothing to hand off for {}", dkey);
-                break;
-            }
-
-            startColumn = cf.getColumnNames().last();
-            RowMutation rm = new RowMutation(tableName, key);
-            rm.add(cf);
-
-            if (!sendMutation(endpoint, rm)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
     private static boolean sendMutation(InetAddress endpoint, RowMutation mutation) throws IOException
     {
         if (!Gossiper.instance.isKnownEndpoint(endpoint))
@@ -371,16 +320,8 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
                 Collection<IColumn> tableCFs = keyColumn.getSubColumns();
                 for (IColumn tableCF : tableCFs)
                 {
-                    boolean hintSent = false;
-
-                    // determine type of hint to send
-                    if (tableCF.value().remaining() == 0)
-                    {
-                        // "pointer" hint, generate mutation from row data
-                        String[] parts = getTableAndCFNames(tableCF.name());
-                        hintSent = sendRow(endpoint, parts[0], parts[1], keyColumn.name());
-                    }
-                    else
+                    // ensure there's a mutation stored for the hint
+                    if (tableCF.value().remaining() > 0)
                     {
                         // serialized hint, locate and send serialized mutation
                         QueryFilter qf = QueryFilter.getNamesFilter(epkey, new QueryPath(HINT_MUTATIONS_CF), tableCF.value());
@@ -395,25 +336,31 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
                                 mutationColumn.value().array(), // serialized mutation
                                 ByteBufferUtil.toInt(mutationColumn.name())); // serialization version
 
-                            hintSent = sendMutation(endpoint, rm);
-
-                            // delete serialized mutation
-                            if (hintSent)
+                            // send mutation to endpoint
+                            if (sendMutation(endpoint, rm))
                             {
+                                // delete hint
                                 deleteHintMutation(endpointAsUTF8, mutationColumn.value(), tableCF.timestamp());
+                                deleteHintKey(endpointAsUTF8, keyColumn.name(), tableCF.name(), tableCF.timestamp());
+
+                                rowsReplayed++;
+                            }
+                            else
+                            {
+                                logger_.info("Could not complete hinted handoff to " + endpoint);
+                                break delivery;
                             }
                         }
-                    }
-
-                    if (hintSent)
-                    {
-                        deleteHintKey(endpointAsUTF8, keyColumn.name(), tableCF.name(), tableCF.timestamp());
-                        rowsReplayed++;
+                        else
+                        {
+                            // serialization version mismatch, ignore and discard
+                            deleteHintKey(endpointAsUTF8, keyColumn.name(), tableCF.name(), tableCF.timestamp());
+                        }
                     }
                     else
                     {
-                        logger_.info("Could not complete hinted handoff to " + endpoint);
-                        break delivery;
+                        // old-style "pointer" hint, ignore and discard
+                        deleteHintKey(endpointAsUTF8, keyColumn.name(), tableCF.name(), tableCF.timestamp());
                     }
 
                     startColumn = keyColumn.name();
