@@ -125,10 +125,6 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
             logger_.warn("Hints found for endpoint " + endpoint + " which is not part of the gossip network.  discarding.");
             return true;
         }
-        if (!FailureDetector.instance.isAlive(endpoint))
-        {
-            return false;
-        }
 
         if (CFMetaData.getId(tableName, cfName) == null)
         {
@@ -179,10 +175,6 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
         {
             logger_.warn("Hints found for endpoint " + endpoint + " which is not part of the gossip network.  discarding.");
             return true;
-        }
-        if (!FailureDetector.instance.isAlive(endpoint))
-        {
-            return false;
         }
 
         IWriteResponseHandler responseHandler =  WriteResponseHandler.create(endpoint);
