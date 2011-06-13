@@ -341,7 +341,7 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
                 logger_.debug("Sleeping {}ms to stagger hint delivery", sleep);
                 Thread.sleep(sleep);
             }
-            if (!Gossiper.instance.getEndpointStateForEndpoint(endpoint).isAlive())
+            if (!FailureDetector.instance.isAlive(endpoint))
             {
                 logger_.info("Endpoint {} died before hint delivery, aborting", endpoint);
                 return;
