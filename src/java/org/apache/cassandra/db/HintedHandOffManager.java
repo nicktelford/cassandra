@@ -382,23 +382,32 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
                     boolean hintSent = false;
 
                     // determine type of hint to send
-                    if (tableCF.value().remaining() == 0) {
+                    if (tableCF.value().remaining() == 0)
+                    {
                         // "pointer" hint, generate mutation from row data
                         String[] parts = getTableAndCFNames(tableCF.name());
                         hintSent = sendRow(endpoint, parts[0], parts[1], keyColumn.name());
-                    } else {
+                    }
+                    else
+                    {
                         // serialized hint, locate and send serialized mutation
-                        ColumnFamily mutationColumnFamily =
-                                hintedMutationStore.getColumnFamily(QueryFilter.getNamesFilter(epkey, new QueryPath(HINT_MUTATIONS_CF), tableCF.value()));
-                        IColumn mutationColumn = mutationColumnFamily.getColumn(tableCF.value()).getSubColumn(ByteBufferUtil.bytes(MessagingService.version_));
-                        if (mutationColumn != null) {
-                            hintSent = sendMutation(endpoint,
-                                    RowMutation.fromBytes(
-                                            mutationColumn.value().array(), // serialized mutation
-                                            ByteBufferUtil.toInt(mutationColumn.name()))); // serialization version
+                        QueryFilter qf = QueryFilter.getNamesFilter(epkey, new QueryPath(HINT_MUTATIONS_CF), tableCF.value());
+                        ColumnFamily mutationColumnFamily = hintedMutationStore.getColumnFamily(qf);
+                        IColumn mutationColumn = mutationColumnFamily
+                                .getColumn(tableCF.value())
+                                .getSubColumn(ByteBufferUtil.bytes(MessagingService.version_));
+
+                        if (mutationColumn != null)
+                        {
+                            RowMutation rm = RowMutation.fromBytes(
+                                mutationColumn.value().array(), // serialized mutation
+                                ByteBufferUtil.toInt(mutationColumn.name())); // serialization version
+
+                            hintSent = sendMutation(endpoint, rm);
 
                             // delete serialized mutation
-                            if (hintSent) {
+                            if (hintSent)
+                            {
                                 deleteHintMutation(endpointAsUTF8, mutationColumn.value(), tableCF.timestamp());
                             }
                         }
