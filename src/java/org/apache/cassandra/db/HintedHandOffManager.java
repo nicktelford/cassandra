@@ -165,24 +165,9 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
             startColumn = cf.getColumnNames().last();
             RowMutation rm = new RowMutation(tableName, key);
             rm.add(cf);
-            IWriteResponseHandler responseHandler =  WriteResponseHandler.create(endpoint);
-            MessagingService.instance().sendRR(rm, endpoint, responseHandler);
-            try
-            {
-                responseHandler.get();
-            }
-            catch (TimeoutException e)
-            {
-                return false;
-            }
 
-            try
-            {
-                Thread.sleep(DatabaseDescriptor.getHintedHandoffThrottleDelay());
-            }
-            catch (InterruptedException e)
-            {
-                throw new AssertionError(e);
+            if (!sendMutation(endpoint, rm)) {
+                return false;
             }
         }
         return true;
