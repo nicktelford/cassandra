@@ -385,13 +385,15 @@ public class DatabaseDescriptor
                                                    CFMetaData.MigrationsCf,
                                                    CFMetaData.SchemaCf,
                                                    CFMetaData.IndexCf,
-                                                   CFMetaData.NodeIdCf);
+                                                   CFMetaData.NodeIdCf,
+                                                   CFMetaData.HintedMutationsCF);
             CFMetaData.map(CFMetaData.StatusCf);
             CFMetaData.map(CFMetaData.HintsCf);
             CFMetaData.map(CFMetaData.MigrationsCf);
             CFMetaData.map(CFMetaData.SchemaCf);
             CFMetaData.map(CFMetaData.IndexCf);
             CFMetaData.map(CFMetaData.NodeIdCf);
+            CFMetaData.map(CFMetaData.HintedMutationsCF);
             tables.put(Table.SYSTEM_TABLE, systemMeta);
             
             /* Load the seeds for node contact points */

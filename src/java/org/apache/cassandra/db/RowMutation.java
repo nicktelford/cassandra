@@ -23,7 +23,10 @@ import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
 
+import org.apache.cassandra.io.util.DataOutputBuffer;
 import org.apache.cassandra.net.MessageProducer;
+import org.apache.cassandra.net.MessagingService;
+import org.apache.cassandra.utils.UUIDGen;
 import org.apache.commons.lang.StringUtils;
 
 import org.apache.cassandra.config.CFMetaData;
@@ -102,9 +105,20 @@ public class RowMutation implements IMutation, MessageProducer
     {
         for (ColumnFamily cf : rm.getColumnFamilies())
         {
+            ByteBuffer mutationId = ByteBufferUtil.EMPTY_BYTE_BUFFER;
+
+            // TODO: We need a means to select the best strategy here, either automatically or a CF attribute
+            if (true) {
+                // serialize and store RowMutation
+                QueryPath path = new QueryPath(HintedHandOffManager.HINT_MUTATIONS_CF, mutationId, ByteBufferUtil.bytes(MessagingService.version_));
+
+                mutationId = ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes());
+                add(path, ByteBuffer.wrap(rm.getSerializedBuffer(MessagingService.version_)), System.currentTimeMillis(), cf.metadata().getGcGraceSeconds());
+            }
+
             ByteBuffer combined = HintedHandOffManager.makeCombinedName(rm.getTable(), cf.metadata().cfName);
             QueryPath path = new QueryPath(HintedHandOffManager.HINTS_CF, rm.key(), combined);
-            add(path, ByteBufferUtil.EMPTY_BYTE_BUFFER, System.currentTimeMillis(), cf.metadata().getGcGraceSeconds());
+            add(path, mutationId, System.currentTimeMillis(), cf.metadata().getGcGraceSeconds());
         }
     }
 
