@@ -110,9 +110,8 @@ public class RowMutation implements IMutation, MessageProducer
             // TODO: We need a means to select the best strategy here, either automatically or a CF attribute
             if (true) {
                 // serialize and store RowMutation
-                QueryPath path = new QueryPath(HintedHandOffManager.HINT_MUTATIONS_CF, mutationId, ByteBufferUtil.bytes(MessagingService.version_));
-
                 mutationId = ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes());
+                QueryPath path = new QueryPath(HintedHandOffManager.HINT_MUTATIONS_CF, mutationId, ByteBufferUtil.bytes(MessagingService.version_));
                 add(path, ByteBuffer.wrap(rm.getSerializedBuffer(MessagingService.version_)), System.currentTimeMillis(), cf.metadata().getGcGraceSeconds());
             }
 
