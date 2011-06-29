@@ -90,7 +90,6 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
 {
     public static final HintedHandOffManager instance = new HintedHandOffManager();
     public static final String HINTS_CF = "HintsColumnFamily";
-    public static final String HINT_MUTATIONS_CF = "HintedMutationsColumnFamily";
 
     private static final Logger logger_ = LoggerFactory.getLogger(HintedHandOffManager.class);
     private static final int PAGE_SIZE = 10000;
@@ -150,17 +149,10 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
         return true;
     }
 
-    private static void deleteHintKey(ByteBuffer endpointAddress, ByteBuffer key, ByteBuffer tableCF, long timestamp) throws IOException
+    private static void deleteHint(ByteBuffer endpointAddress, ByteBuffer key, long timestamp) throws IOException
     {
         RowMutation rm = new RowMutation(Table.SYSTEM_TABLE, endpointAddress);
-        rm.delete(new QueryPath(HINTS_CF, key, tableCF), timestamp);
-        rm.apply();
-    }
-
-    private static void deleteHintMutation(ByteBuffer endpointAddress, ByteBuffer mutationId, long timestamp) throws IOException
-    {
-        RowMutation rm = new RowMutation(Table.SYSTEM_TABLE, endpointAddress);
-        rm.delete(new QueryPath(HINT_MUTATIONS_CF, mutationId), timestamp);
+        rm.delete(new QueryPath(HINTS_CF, key), timestamp);
         rm.apply();
     }
 
@@ -183,11 +175,8 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
     {
         final String ipaddr = endpoint.getHostAddress();
         final ColumnFamilyStore hintStore = Table.open(Table.SYSTEM_TABLE).getColumnFamilyStore(HINTS_CF);
-        final ColumnFamilyStore hintMutationStore = Table.open(Table.SYSTEM_TABLE).getColumnFamilyStore(HINT_MUTATIONS_CF);
         final RowMutation rm = new RowMutation(Table.SYSTEM_TABLE, ByteBufferUtil.bytes(ipaddr));
-        final RowMutation mutationsRm = new RowMutation(Table.SYSTEM_TABLE, ByteBufferUtil.bytes(ipaddr));
         rm.delete(new QueryPath(HINTS_CF), System.currentTimeMillis());
-        mutationsRm.delete(new QueryPath(HINT_MUTATIONS_CF), System.currentTimeMillis());
 
         // execute asynchronously to avoid blocking caller (which may be processing gossip)
         Runnable runnable = new Runnable()
@@ -198,11 +187,8 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
                 {
                     logger_.info("Deleting any stored hints for " + ipaddr);
                     rm.apply();
-                    mutationsRm.apply();
                     hintStore.forceFlush();
-                    hintMutationStore.forceFlush();
                     CompactionManager.instance.submitMaximal(hintStore, Integer.MAX_VALUE);
-                    CompactionManager.instance.submitMaximal(hintMutationStore, Integer.MAX_VALUE);
                 }
                 catch (Exception e)
                 {
@@ -282,6 +268,7 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
                 logger_.debug("Sleeping {}ms to stagger hint delivery", sleep);
                 Thread.sleep(sleep);
             }
+
             if (!FailureDetector.instance.isAlive(endpoint))
             {
                 logger_.info("Endpoint {} died before hint delivery, aborting", endpoint);
@@ -296,7 +283,7 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
         logger_.info("Started hinted handoff for endpoint " + endpoint);
 
         // 1. Get the key of the endpoint we need to handoff
-        // 2. For each column read the list of rows: subcolumns are KS + SEPARATOR + CF
+        // 2. For each column, deserialize the mutation and send it to the endpoint
         // 3. Delete the subcolumn if the write was successful
         // 4. Force a flush
         // 5. Do major compaction to clean up all deletes etc.
@@ -304,7 +291,6 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
         DecoratedKey<?> epkey =  StorageService.getPartitioner().decorateKey(endpointAsUTF8);
         int rowsReplayed = 0;
         ColumnFamilyStore hintStore = Table.open(Table.SYSTEM_TABLE).getColumnFamilyStore(HINTS_CF);
-        ColumnFamilyStore hintedMutationStore = Table.open(Table.SYSTEM_TABLE).getColumnFamilyStore(HINT_MUTATIONS_CF);
         ByteBuffer startColumn = ByteBufferUtil.EMPTY_BYTE_BUFFER;
 
         delivery:
@@ -314,56 +300,41 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
             ColumnFamily hintColumnFamily = ColumnFamilyStore.removeDeleted(hintStore.getColumnFamily(filter), Integer.MAX_VALUE);
             if (pagingFinished(hintColumnFamily, startColumn))
                 break;
-            for (IColumn keyColumn : hintColumnFamily.getSortedColumns())
+            for (IColumn dataColumn : hintColumnFamily.getSortedColumns())
             {
-                startColumn = keyColumn.name();
-                Collection<IColumn> tableCFs = keyColumn.getSubColumns();
-                for (IColumn tableCF : tableCFs)
+                startColumn = dataColumn.name();
+                IColumn versionColumn = dataColumn.getSubColumn(ByteBufferUtil.bytes("version"));
+                if (versionColumn != null)
                 {
-                    // ensure there's a mutation stored for the hint
-                    if (tableCF.value().remaining() > 0)
+                    if (MessagingService.version_ != ByteBufferUtil.toInt(versionColumn))
                     {
-                        // serialized hint, locate and send serialized mutation
-                        QueryFilter qf = QueryFilter.getNamesFilter(epkey, new QueryPath(HINT_MUTATIONS_CF), tableCF.value());
-                        ColumnFamily mutationColumnFamily = hintedMutationStore.getColumnFamily(qf);
-                        IColumn mutationColumn = mutationColumnFamily
-                                .getColumn(tableCF.value())
-                                .getSubColumn(ByteBufferUtil.bytes(MessagingService.version_));
+                        deleteHint(endpointAsUTF8, dataColumn.name(), versionColumn.timestamp());
+                        continue;
+                    }
 
-                        if (mutationColumn != null)
-                        {
-                            RowMutation rm = RowMutation.fromBytes(
-                                mutationColumn.value().array(), // serialized mutation
-                                ByteBufferUtil.toInt(mutationColumn.name())); // serialization version
 
-                            // send mutation to endpoint
-                            if (sendMutation(endpoint, rm))
-                            {
-                                // delete hint
-                                deleteHintMutation(endpointAsUTF8, mutationColumn.value(), tableCF.timestamp());
-                                deleteHintKey(endpointAsUTF8, keyColumn.name(), tableCF.name(), tableCF.timestamp());
+                    IColumn tableColumn = dataColumn.getSubColumn(ByteBufferUtil.bytes("table"));
+                    IColumn keyColumn = dataColumn.getSubColumn(ByteBufferUtil.bytes("key"));
+                    IColumn mutationColumn = dataColumn.getSubColumn(ByteBufferUtil.bytes("mutation"));
 
-                                rowsReplayed++;
-                            }
-                            else
-                            {
-                                logger_.info("Could not complete hinted handoff to " + endpoint);
-                                break delivery;
-                            }
-                        }
-                        else
-                        {
-                            // serialization version mismatch, ignore and discard
-                            deleteHintKey(endpointAsUTF8, keyColumn.name(), tableCF.name(), tableCF.timestamp());
-                        }
+                    if (tableColumn == null || keyColumn == null || mutationColumn == null)
+                    {
+                        logger_.info("Missing metadata for mutation " + dataColumn.name());
+                        continue;
+                    }
+
+                    RowMutation rm = RowMutation.fromBytes(mutationColumn.value().array(), MessagingService.version_);
+
+                    if (sendMutation(endpoint, rm))
+                    {
+                        deleteHint(endpointAsUTF8, dataColumn.name(), versionColumn.timestamp());
+                        rowsReplayed++; 
                     }
                     else
                     {
-                        // old-style "pointer" hint, ignore and discard
-                        deleteHintKey(endpointAsUTF8, keyColumn.name(), tableCF.name(), tableCF.timestamp());
+                        logger_.info("Could not complete hinted handoff to " + endpoint);
+                        break delivery;
                     }
-
-                    startColumn = keyColumn.name();
                 }
             }
         }

@@ -105,17 +105,21 @@ public class RowMutation implements IMutation, MessageProducer
     {
         ByteBuffer mutationId = ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes());
 
-        for (ColumnFamily cf : rm.getColumnFamilies())
-        {
-            // serialize and store RowMutation
-            QueryPath path = new QueryPath(HintedHandOffManager.HINT_MUTATIONS_CF, mutationId, ByteBufferUtil.bytes(MessagingService.version_));
-            add(path, ByteBuffer.wrap(rm.getSerializedBuffer(MessagingService.version_)), System.currentTimeMillis(), cf.metadata().getGcGraceSeconds());
+        // serialized RowMutation
+        QueryPath path = new QueryPath(HintedHandOffManager.HINTS_CF, mutationId, ByteBufferUtil.bytes("mutation")); 
+        add(path, ByteBuffer.wrap(rm.getSerializedBuffer(MessagingService.version_)), System.currentTimeMillis(), cf.metadata().getGcGraceSeconds());
 
-            // store hint pointer
-            ByteBuffer combined = HintedHandOffManager.makeCombinedName(rm.getTable(), cf.metadata().cfName);
-            QueryPath path = new QueryPath(HintedHandOffManager.HINTS_CF, rm.key(), combined);
-            add(path, mutationId, System.currentTimeMillis(), cf.metadata().getGcGraceSeconds());
-        }
+        // serialization version
+        QueryPath path = new QueryPath(HintedHandOffManager.HINTS_CF, mutationId, ByteBufferUtil.bytes("version"));
+        add(path, ByteBufferUtil.bytes(MessagingService.version_), System.currentTimeMillis(), cf.metadata().getGcGraceSeconds());
+
+        // table
+        QueryPath path = new QueryPath(HintedHandOffManager.HINTS_CF, mutationId, ByteBufferUtil.bytes("table"));
+        add(path, rm.getTable(), System.currentTimeMillis(), cf.metadata().getGcGraceSeconds());
+
+        // key
+        QueryPath path = new QueryPath(HintedHandOffManager.HINTS_CF, mutationId, ByteBufferUtil.bytes("table"));
+        add(path, rm.key(), System.currentTimeMillis(), cf.metadata().getGcGraceSeconds());
     }
 
     /*
