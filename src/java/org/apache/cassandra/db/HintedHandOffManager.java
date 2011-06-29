@@ -119,12 +119,6 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
 
     private static boolean sendMutation(InetAddress endpoint, RowMutation mutation) throws IOException
     {
-        if (!Gossiper.instance.isKnownEndpoint(endpoint))
-        {
-            logger_.warn("Hints found for endpoint " + endpoint + " which is not part of the gossip network.  discarding.");
-            return true;
-        }
-
         IWriteResponseHandler responseHandler =  WriteResponseHandler.create(endpoint);
         MessagingService.instance().sendRR(mutation, endpoint, responseHandler);
 
@@ -267,6 +261,13 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
                 int sleep = new Random().nextInt(60000);
                 logger_.debug("Sleeping {}ms to stagger hint delivery", sleep);
                 Thread.sleep(sleep);
+            }
+
+            if (!Gossiper.instance.isKnownEndpoint(endpoint))
+            {
+                logger_.warn("Hints found for endpoint " + endpoint + " which is not part of the gossip network.  discarding.");
+                deleteHintsForEndpoint(endpoint);
+                return;
             }
 
             if (!FailureDetector.instance.isAlive(endpoint))
