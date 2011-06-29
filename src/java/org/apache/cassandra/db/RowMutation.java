@@ -103,18 +103,15 @@ public class RowMutation implements IMutation, MessageProducer
 
     void addHints(RowMutation rm) throws IOException
     {
+        ByteBuffer mutationId = ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes());
+
         for (ColumnFamily cf : rm.getColumnFamilies())
         {
-            ByteBuffer mutationId = ByteBufferUtil.EMPTY_BYTE_BUFFER;
+            // serialize and store RowMutation
+            QueryPath path = new QueryPath(HintedHandOffManager.HINT_MUTATIONS_CF, mutationId, ByteBufferUtil.bytes(MessagingService.version_));
+            add(path, ByteBuffer.wrap(rm.getSerializedBuffer(MessagingService.version_)), System.currentTimeMillis(), cf.metadata().getGcGraceSeconds());
 
-            // TODO: We need a means to select the best strategy here, either automatically or a CF attribute
-            if (true) {
-                // serialize and store RowMutation
-                mutationId = ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes());
-                QueryPath path = new QueryPath(HintedHandOffManager.HINT_MUTATIONS_CF, mutationId, ByteBufferUtil.bytes(MessagingService.version_));
-                add(path, ByteBuffer.wrap(rm.getSerializedBuffer(MessagingService.version_)), System.currentTimeMillis(), cf.metadata().getGcGraceSeconds());
-            }
-
+            // store hint pointer
             ByteBuffer combined = HintedHandOffManager.makeCombinedName(rm.getTable(), cf.metadata().cfName);
             QueryPath path = new QueryPath(HintedHandOffManager.HINTS_CF, rm.key(), combined);
             add(path, mutationId, System.currentTimeMillis(), cf.metadata().getGcGraceSeconds());
