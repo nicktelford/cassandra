@@ -307,7 +307,7 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
                 IColumn versionColumn = dataColumn.getSubColumn(ByteBufferUtil.bytes("version"));
                 if (versionColumn != null)
                 {
-                    if (MessagingService.version_ != ByteBufferUtil.toInt(versionColumn))
+                    if (MessagingService.version_ != ByteBufferUtil.toInt(versionColumn.value()))
                     {
                         deleteHint(endpointAsUTF8, dataColumn.name(), versionColumn.timestamp());
                         continue;
