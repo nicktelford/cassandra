@@ -41,6 +41,8 @@ import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.TypeParser;
 import org.apache.cassandra.db.migration.Migration;
 import org.apache.cassandra.dht.IPartitioner;
+import org.apache.cassandra.gms.Gossiper;
+import org.apache.cassandra.gms.VersionedValue;
 import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.locator.*;
@@ -59,12 +61,11 @@ public class DatabaseDescriptor
 
     private static IEndpointSnitch snitch;
     private static InetAddress listenAddress; // leave null so we can fall through to getLocalHost
+    private static InetAddress broadcastAddress;
     private static InetAddress rpcAddress;
     private static SeedProvider seedProvider;
     /* Current index into the above list of directories */
     private static int currentIndex = 0;
-    private static int consistencyThreads = 4; // not configurable
-
 
     static Map<String, KSMetaData> tables = new HashMap<String, KSMetaData>();
 
@@ -100,7 +101,7 @@ public class DatabaseDescriptor
         try
         {
             url = new URL(configUrl);
-            url.openStream(); // catches well-formed but bogus URLs
+            url.openStream().close(); // catches well-formed but bogus URLs
         }
         catch (Exception e)
         {
@@ -246,11 +247,6 @@ public class DatabaseDescriptor
             /* Local IP or hostname to bind services to */
             if (conf.listen_address != null)
             {
-                if (conf.listen_address.equals("0.0.0.0"))
-                {
-                    throw new ConfigurationException("listen_address must be a single interface.  See http://wiki.apache.org/cassandra/FAQ#cant_listen_on_ip_any");
-                }
-                
                 try
                 {
                     listenAddress = InetAddress.getByName(conf.listen_address);
@@ -258,6 +254,24 @@ public class DatabaseDescriptor
                 catch (UnknownHostException e)
                 {
                     throw new ConfigurationException("Unknown listen_address '" + conf.listen_address + "'");
+                }
+            }
+
+            /* Gossip Address to broadcast */
+            if (conf.broadcast_address != null)
+            {
+                if (conf.broadcast_address.equals("0.0.0.0"))
+                {
+                    throw new ConfigurationException("broadcast_address cannot be 0.0.0.0!");
+                }
+                
+                try
+                {
+                    broadcastAddress = InetAddress.getByName(conf.broadcast_address);
+                }
+                catch (UnknownHostException e)
+                {
+                    throw new ConfigurationException("Unknown broadcast_address '" + conf.broadcast_address + "'");
                 }
             }
             
@@ -375,6 +389,9 @@ public class DatabaseDescriptor
                 if (conf.saved_caches_directory == null)
                     throw new ConfigurationException("saved_caches_directory missing");
             }
+
+            if (conf.initial_token != null)
+                partitioner.getTokenFactory().validate(conf.initial_token);
 
             // Hardcoded system tables
             KSMetaData systemMeta = new KSMetaData(Table.SYSTEM_TABLE,
@@ -691,11 +708,6 @@ public class DatabaseDescriptor
         return conf.phi_convict_threshold;
     }
 
-    public static int getConsistencyThreads()
-    {
-        return consistencyThreads;
-    }
-
     public static int getConcurrentReaders()
     {
         return conf.concurrent_reads;
@@ -719,6 +731,11 @@ public class DatabaseDescriptor
     public static int getInMemoryCompactionLimit()
     {
         return conf.in_memory_compaction_limit_in_mb * 1024 * 1024;
+    }
+
+    public static void setInMemoryCompactionLimit(int sizeInMB)
+    {
+        conf.in_memory_compaction_limit_in_mb = sizeInMB;
     }
 
     public static int getConcurrentCompactors()
@@ -863,6 +880,16 @@ public class DatabaseDescriptor
     public static InetAddress getListenAddress()
     {
         return listenAddress;
+    }
+    
+    public static InetAddress getBroadcastAddress()
+    {
+        return broadcastAddress;
+    }
+    
+    public static void setBroadcastAddress(InetAddress broadcastAdd)
+    {
+        broadcastAddress = broadcastAdd;
     }
     
     public static InetAddress getRpcAddress()

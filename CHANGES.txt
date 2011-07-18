@@ -5,15 +5,47 @@
  * make AbstractBounds.normalize de-overlapp overlapping ranges (CASSANDRA-2641)
  * replace CollatingIterator, ReducingIterator with MergeIterator 
    (CASSANDRA-2062)
- * Fixed the ability to set compaction strategy in cli using create column family command (CASSANDRA-2778)
- * Add startup flag to renew counter node id (CASSANDRA-2788)
+ * Fixed the ability to set compaction strategy in cli using create column 
+   family command (CASSANDRA-2778)
  * clean up tmp files after failed compaction (CASSANDRA-2468)
+ * restrict repair streaming to specific columnfamilies (CASSANDRA-2280)
+ * don't bother persisting columns shadowed by a row tombstone (CASSANDRA-2589)
+ * reset CF and SC deletion times after gc_grace (CASSANDRA-2317)
+ * optimize away seek when compacting wide rows (CASSANDRA-2879)
+ * single-pass streaming (CASSANDRA-2677)
 
 
 0.8.2
  * improve thread-safety in StreamOutSession (CASSANDRA-2792)
+ * allow deleting a row and updating indexed columns in it in the
+   same mutation (CASSANDRA-2773)
  * Expose number of threads blocked on submitting memtable to flush
    (CASSANDRA-2817)
+ * add ability to return "endpoints" to nodetool (CASSANDRA-2776)
+ * Add support for multiple (comma-delimited) coordinator addresses
+   to ColumnFamilyInputFormat (CASSANDRA-2807)
+ * fix potential NPE while scheduling read repair for range slice
+   (CASSANDRA-2823)
+ * Fix race in SystemTable.getCurrentLocalNodeId (CASSANDRA-2824)
+ * Correctly set default for replicate_on_write (CASSANDRA-2835)
+ * improve nodetool compactionstats formatting (CASSANDRA-2844)
+ * fix index-building status display (CASSANDRA-2853)
+ * fix CLI perpetuating obsolete KsDef.replication_factor (CASSANDRA-2846)
+ * improve cli treatment of multiline comments (CASSANDRA-2852)
+ * handle row tombstones correctly in EchoedRow (CASSANDRA-2786)
+ * add MessagingService.get[Recently]DroppedMessages and
+   StorageService.getExceptionCount (CASSANDRA-2804)
+ * fix possibility of spurious UnavailableException for LOCAL_QUORUM
+   reads with dynamic snitch + read repair disabled (CASSANDRA-2870)
+ * add ant-optional as dependence for the debian package (CASSANDRA-2164)
+ * add option to specify limit for get_slice in the CLI (CASSANDRA-2646)
+ * decrease HH page size (CASSANDRA-2832)
+ * reset cli keyspace after dropping the current one (CASSANDRA-2763)
+ * add KeyRange option to Hadoop inputformat (CASSANDRA-1125)
+ * fix protocol versioning (CASSANDRA-2818, 2860)
+ * support spaces in path to log4j configuration (CASSANDRA-2383)
+ * avoid including inferred types in CF update (CASSANDRA-2809)
+ * fix JMX bulkload call (CASSANDRA-2908)
 
 
 0.8.1
@@ -63,7 +95,6 @@
  * fix truncate/compaction race (CASSANDRA-2673)
  * workaround large resultsets causing large allocation retention
    by nio sockets (CASSANDRA-2654)
- * restrict repair streaming to specific columnfamilies (CASSANDRA-2280)
  * fix nodetool ring use with Ec2Snitch (CASSANDRA-2733)
  * fix inconsistency window during bootstrap (CASSANDRA-833)
  * fix removing columns and subcolumns that are supressed by a row or
@@ -86,10 +117,18 @@
  * expose the DC and rack of a node through JMX and nodetool ring (CASSANDRA-2531)
  * fix cache mbean getSize (CASSANDRA-2781)
  * Add Date, Float, Double, and Boolean types (CASSANDRA-2530)
- * fix repair hanging if a neighbor has nothing to send (CASSANDRA-2797)
+ * Add startup flag to renew counter node id (CASSANDRA-2788)
  * add jamm agent to cassandra.bat (CASSANDRA-2787)
- * Fix wrong purge of deleted cf during compaction (CASSANDRA-2786)
+ * fix repair hanging if a neighbor has nothing to send (CASSANDRA-2797)
  * purge tombstone even if row is in only one sstable (CASSANDRA-2801)
+ * Fix wrong purge of deleted cf during compaction (CASSANDRA-2786)
+ * fix race that could result in Hadoop writer failing to throw an
+   exception encountered after close() (CASSANDRA-2755)
+ * fix scan wrongly throwing assertion error (CASSANDRA-2653)
+ * Always use even distribution for merkle tree with RandomPartitionner
+   (CASSANDRA-2841)
+ * fix describeOwnership for OPP (CASSANDRA-2800)
+ * ensure that string tokens do not contain commas (CASSANDRA-2762)
 
 
 0.8.0-final
@@ -199,6 +238,7 @@
  * add a server-wide cap on measured memtable memory usage and aggressively
    flush to keep under that threshold (CASSANDRA-2006)
  * add unified UUIDType (CASSANDRA-2233)
+ * add off-heap row cache support (CASSANDRA-1969)
 
 
 0.7.5
@@ -208,9 +248,6 @@
  * reduce contention on Table.flusherLock (CASSANDRA-1954)
  * try harder to detect failures during streaming, cleaning up temporary
    files more reliably (CASSANDRA-2088)
-
-
-0.6.13
  * shut down server for OOM on a Thrift thread (CASSANDRA-2269)
  * fix tombstone handling in repair and sstable2json (CASSANDRA-2279)
  * preserve version when streaming data from old sstables (CASSANDRA-2283)

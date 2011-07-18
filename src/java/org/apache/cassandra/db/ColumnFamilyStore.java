@@ -775,6 +775,10 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         // (we want this to be deterministic to avoid confusion.)
         if (cf.getColumnCount() == 0 && cf.getLocalDeletionTime() <= gcBefore)
             return null;
+
+        // If there is non deleted columns, we still need to reset the column family
+        // deletion times since gc_grace seconds had elapsed
+        cf.maybeResetDeletionTimes(gcBefore);
         return cf;
     }
 
@@ -795,7 +799,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         return removeDeletedCF(cf, gcBefore);
     }
 
-    private static void removeDeletedColumnsOnly(ColumnFamily cf, int gcBefore)
+    public static void removeDeletedColumnsOnly(ColumnFamily cf, int gcBefore)
     {
         if (cf.isSuper())
             removeDeletedSuper(cf, gcBefore);
@@ -843,6 +847,12 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             if (c.getSubColumns().isEmpty() && c.getLocalDeletionTime() <= gcBefore)
             {
                 cf.remove(c.name());
+            }
+            else
+            {
+                // If there is non deleted columns, we still need to reset the column family
+                // deletion times since gc_grace seconds had elapsed
+                c.maybeResetDeletionTimes(gcBefore);
             }
         }
     }
@@ -1350,6 +1360,23 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         return rows;
     }
 
+    private NamesQueryFilter getExtraFilter(IndexClause clause)
+    {
+        SortedSet<ByteBuffer> columns = new TreeSet<ByteBuffer>(getComparator());
+        for (IndexExpression expr : clause.expressions)
+        {
+            columns.add(expr.column_name);
+        }
+        return new NamesQueryFilter(columns);
+    }
+
+    private static boolean isIdentityFilter(SliceQueryFilter filter)
+    {
+        return filter.start.equals(ByteBufferUtil.EMPTY_BYTE_BUFFER)
+            && filter.finish.equals(ByteBufferUtil.EMPTY_BYTE_BUFFER)
+            && filter.count == Integer.MAX_VALUE;
+    }
+
     public List<Row> scan(IndexClause clause, AbstractBounds range, IFilter dataFilter)
     {
         // Start with the most-restrictive indexed clause, then apply remaining clauses
@@ -1365,51 +1392,33 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         // if the slicepredicate doesn't contain all the columns for which we have expressions to evaluate,
         // it needs to be expanded to include those too
         IFilter firstFilter = dataFilter;
-        NamesQueryFilter extraFilter = null;
-        if (clause.expressions.size() > 1)
+        if (dataFilter instanceof SliceQueryFilter)
         {
-            if (dataFilter instanceof SliceQueryFilter)
+            // if we have a high chance of getting all the columns in a single index slice, do that.
+            // otherwise, we'll create an extraFilter (lazily) to fetch by name the columns referenced by the additional expressions.
+            if (getMaxRowSize() < DatabaseDescriptor.getColumnIndexSize())
             {
-                // if we have a high chance of getting all the columns in a single index slice, do that.
-                // otherwise, create an extraFilter to fetch by name the columns referenced by the additional expressions.
-                if (getMaxRowSize() < DatabaseDescriptor.getColumnIndexSize())
-                {
-                    logger.debug("Expanding slice filter to entire row to cover additional expressions");
-                    firstFilter = new SliceQueryFilter(ByteBufferUtil.EMPTY_BYTE_BUFFER,
-                                                       ByteBufferUtil.EMPTY_BYTE_BUFFER,
-                                                       ((SliceQueryFilter) dataFilter).reversed,
-                                                       Integer.MAX_VALUE);
-                }
-                else
-                {
-                    logger.debug("adding extraFilter to cover additional expressions");
-                    SortedSet<ByteBuffer> columns = new TreeSet<ByteBuffer>(getComparator());
-                    for (IndexExpression expr : clause.expressions)
-                    {
-                        if (expr == primary)
-                            continue;
-                        columns.add(expr.column_name);
-                    }
-                    extraFilter = new NamesQueryFilter(columns);
-                }
+                logger.debug("Expanding slice filter to entire row to cover additional expressions");
+                firstFilter = new SliceQueryFilter(ByteBufferUtil.EMPTY_BYTE_BUFFER,
+                        ByteBufferUtil.EMPTY_BYTE_BUFFER,
+                        ((SliceQueryFilter) dataFilter).reversed,
+                        Integer.MAX_VALUE);
             }
-            else
+        }
+        else
+        {
+            logger.debug("adding columns to firstFilter to cover additional expressions");
+            // just add in columns that are not part of the resultset
+            assert dataFilter instanceof NamesQueryFilter;
+            SortedSet<ByteBuffer> columns = new TreeSet<ByteBuffer>(getComparator());
+            for (IndexExpression expr : clause.expressions)
             {
-                logger.debug("adding columns to firstFilter to cover additional expressions");
-                // just add in columns that are not part of the resultset
-                assert dataFilter instanceof NamesQueryFilter;
-                SortedSet<ByteBuffer> columns = new TreeSet<ByteBuffer>(getComparator());
-                for (IndexExpression expr : clause.expressions)
-                {
-                    if (expr == primary || ((NamesQueryFilter) dataFilter).columns.contains(expr.column_name))
-                        continue;
-                    columns.add(expr.column_name);
-                }
-                if (columns.size() > 0)
-                {
-                    columns.addAll(((NamesQueryFilter) dataFilter).columns);
-                    firstFilter = new NamesQueryFilter(columns);
-                }
+                columns.add(expr.column_name);
+            }
+            if (columns.size() > 0)
+            {
+                columns.addAll(((NamesQueryFilter) dataFilter).columns);
+                firstFilter = new NamesQueryFilter(columns);
             }
         }
 
@@ -1464,22 +1473,42 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
                 // get the row columns requested, and additional columns for the expressions if necessary
                 ColumnFamily data = getColumnFamily(new QueryFilter(dk, path, firstFilter));
-                assert data != null : String.format("No data found for %s in %s:%s (original filter %s) from expression %s",
-                                                    firstFilter, dk, path, dataFilter, expressionString(primary));
+                // While we the column family we'll get in the end should contains the primary clause column, the firstFilter may not have found it.
+                if (data == null)
+                    data = ColumnFamily.create(metadata);
                 logger.debug("fetched data row {}", data);
-                if (extraFilter != null)
+                if (dataFilter instanceof SliceQueryFilter && !isIdentityFilter((SliceQueryFilter)dataFilter))
                 {
                     // we might have gotten the expression columns in with the main data slice, but
                     // we can't know for sure until that slice is done.  So, we'll do the extra query
                     // if we go through and any expression columns are not present.
+                    boolean needExtraFilter = false;
                     for (IndexExpression expr : clause.expressions)
                     {
-                        if (expr != primary && data.getColumn(expr.column_name) == null)
+                        if (data.getColumn(expr.column_name) == null)
                         {
-                            data.addAll(getColumnFamily(new QueryFilter(dk, path, extraFilter)));
+                            logger.debug("adding extraFilter to cover additional expressions");
+                            // Lazily creating extra filter
+                            needExtraFilter = true;
                             break;
                         }
                     }
+                    if (needExtraFilter)
+                    {
+                        // Note: for counters we must be carefull to not add a column that was already there (to avoid overcount). That is
+                        // why we do the dance of avoiding to query any column we already have (it's also more efficient anyway)
+                        NamesQueryFilter extraFilter = getExtraFilter(clause);
+                        for (IndexExpression expr : clause.expressions)
+                        {
+                            if (data.getColumn(expr.column_name) != null)
+                                extraFilter.columns.remove(expr.column_name);
+                        }
+                        assert !extraFilter.columns.isEmpty();
+                        ColumnFamily cf = getColumnFamily(new QueryFilter(dk, path, extraFilter));
+                        if (cf != null)
+                            data.addAll(cf);
+                    }
+
                 }
 
                 if (satisfies(data, clause, primary))
@@ -1539,11 +1568,10 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     private static boolean satisfies(ColumnFamily data, IndexClause clause, IndexExpression first)
     {
+        // We enforces even the primary clause because reads are not synchronized with writes and it is thus possible to have a race
+        // where the index returned a row which doesn't have the primarycolumn when we actually read it
         for (IndexExpression expression : clause.expressions)
         {
-            // (we can skip "first" since we already know it's satisfied)
-            if (expression == first)
-                continue;
             // check column data vs expression
             IColumn column = data.getColumn(expression.column_name);
             if (column == null)
@@ -2061,13 +2089,24 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     public SSTableWriter createFlushWriter(long estimatedRows, long estimatedSize, ReplayPosition context) throws IOException
     {
-        return new SSTableWriter(getFlushPath(estimatedSize, Descriptor.CURRENT_VERSION), estimatedRows, metadata, partitioner, context);
+        SSTableMetadata.Collector sstableMetadataCollector = SSTableMetadata.createCollector().replayPosition(context);
+        return new SSTableWriter(getFlushPath(estimatedSize, Descriptor.CURRENT_VERSION),
+                                 estimatedRows,
+                                 metadata,
+                                 partitioner,
+                                 sstableMetadataCollector);
     }
 
     public SSTableWriter createCompactionWriter(long estimatedRows, String location, Collection<SSTableReader> sstables) throws IOException
     {
         ReplayPosition rp = ReplayPosition.getReplayPosition(sstables);
-        return new SSTableWriter(getTempSSTablePath(location), estimatedRows, metadata, partitioner, rp);
+        SSTableMetadata.Collector sstableMetadataCollector = SSTableMetadata.createCollector().replayPosition(rp);
+
+        // get the max timestamp of the precompacted sstables
+        for (SSTableReader sstable : sstables)
+            sstableMetadataCollector.updateMaxTimestamp(sstable.getMaxTimestamp());
+
+        return new SSTableWriter(getTempSSTablePath(location), estimatedRows, metadata, partitioner, sstableMetadataCollector);
     }
 
     public Iterable<ColumnFamilyStore> concatWithIndexes()

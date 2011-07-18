@@ -92,7 +92,7 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
     public static final String HINTS_CF = "HintsColumnFamily";
 
     private static final Logger logger_ = LoggerFactory.getLogger(HintedHandOffManager.class);
-    private static final int PAGE_SIZE = 10000;
+    private static final int PAGE_SIZE = 1024;
     private static final String SEPARATOR = "-";
     private static final int LARGE_NUMBER = 65536; // 64k nodes ought to be enough for anybody.
 
@@ -238,7 +238,7 @@ public class HintedHandOffManager implements HintedHandOffManagerMBean
         waited = 0;
         // then wait for the correct schema version.
         while (!gossiper.getEndpointStateForEndpoint(endpoint).getApplicationState(ApplicationState.SCHEMA).value.equals(
-                gossiper.getEndpointStateForEndpoint(FBUtilities.getLocalAddress()).getApplicationState(ApplicationState.SCHEMA).value))
+                gossiper.getEndpointStateForEndpoint(FBUtilities.getBroadcastAddress()).getApplicationState(ApplicationState.SCHEMA).value))
         {
             Thread.sleep(1000);
             waited += 1000;

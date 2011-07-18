@@ -46,6 +46,7 @@ public class CompactionController
 
     public final boolean isMajor;
     public final int gcBefore;
+    private int throttleResolution;
 
     public CompactionController(ColumnFamilyStore cfs, Collection<SSTableReader> sstables, int gcBefore, boolean forceDeserialize)
     {
@@ -55,15 +56,26 @@ public class CompactionController
         this.gcBefore = gcBefore;
         this.forceDeserialize = forceDeserialize;
         isMajor = cfs.isCompleteSSTables(this.sstables);
+        // how many rows we expect to compact in 100ms
+        long rowSize = cfs.getMeanRowSize();
+        int rowsPerSecond = rowSize > 0
+                          ? (int) (DatabaseDescriptor.getCompactionThroughputMbPerSec() * 1024 * 1024 / rowSize)
+                          : 1000;
+        throttleResolution = rowsPerSecond / 10;
+        if (throttleResolution <= 0)
+            throttleResolution = 1;
     }
 
-    /** @return the keyspace name */
+    public int getThrottleResolution()
+    {
+        return throttleResolution;
+    }
+
     public String getKeyspace()
     {
         return cfs.table.name;
     }
 
-    /** @return the column family name */
     public String getColumnFamily()
     {
         return cfs.columnFamily;
@@ -113,7 +125,7 @@ public class CompactionController
     public AbstractCompactedRow getCompactedRow(List<SSTableIdentityIterator> rows)
     {
         if (rows.size() == 1 && !needDeserialize() && !shouldPurge(rows.get(0).getKey()))
-            return new EchoedRow(rows.get(0));
+            return new EchoedRow(this, rows.get(0));
 
         long rowSize = 0;
         for (SSTableIdentityIterator row : rows)

@@ -32,8 +32,10 @@ import org.apache.avro.util.Utf8;
 import org.apache.cassandra.cache.IRowCacheProvider;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.db.migration.avro.ColumnDef;
+import org.apache.cassandra.db.Column;
 import org.apache.cassandra.db.ColumnFamilyType;
 import org.apache.cassandra.db.HintedHandOffManager;
+import org.apache.cassandra.db.SuperColumn;
 import org.apache.cassandra.db.SystemTable;
 import org.apache.cassandra.db.Table;
 import org.apache.cassandra.db.ColumnFamilyStore;
@@ -43,6 +45,7 @@ import org.apache.cassandra.db.marshal.TimeUUIDType;
 import org.apache.cassandra.db.marshal.UTF8Type;
 import org.apache.cassandra.db.migration.Migration;
 import org.apache.cassandra.db.compaction.AbstractCompactionStrategy;
+import org.apache.cassandra.io.IColumnSerializer;
 import org.apache.cassandra.io.SerDeUtils;
 import org.apache.cassandra.thrift.InvalidRequestException;
 import org.apache.cassandra.utils.ByteBufferUtil;
@@ -656,6 +659,8 @@ public final class CFMetaData
     {
         if (!cf_def.isSetComment())
             cf_def.setComment("");
+        if (!cf_def.isSetReplicate_on_write())
+            cf_def.setReplicate_on_write(CFMetaData.DEFAULT_REPLICATE_ON_WRITE);
         if (!cf_def.isSetMin_compaction_threshold())
             cf_def.setMin_compaction_threshold(CFMetaData.DEFAULT_MIN_COMPACTION_THRESHOLD);
         if (!cf_def.isSetMax_compaction_threshold())
@@ -1084,6 +1089,13 @@ public final class CFMetaData
     public static String getDefaultIndexName(AbstractType comparator, ByteBuffer columnName)
     {
         return comparator.getString(columnName).replaceAll("\\W", "") + "_idx";
+    }
+
+    public IColumnSerializer getColumnSerializer()
+    {
+        if (cfType == ColumnFamilyType.Standard)
+            return Column.serializer();
+        return SuperColumn.serializer(subcolumnComparator);
     }
 
     @Override

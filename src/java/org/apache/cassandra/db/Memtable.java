@@ -232,7 +232,18 @@ public class Memtable
             // (we can't clear out the map as-we-go to free up memory,
             //  since the memtable is being used for queries in the "pending flush" category)
             for (Map.Entry<DecoratedKey, ColumnFamily> entry : columnFamilies.entrySet())
-                writer.append(entry.getKey(), entry.getValue());
+            {
+                ColumnFamily cf = entry.getValue();
+                if (cf.isMarkedForDelete())
+                {
+                    // Pedantically, you could purge column level tombstones that are past GcGRace when writing to the SSTable.
+                    // But it can result in unexpected behaviour where deletes never make it to disk,
+                    // as they are lost and so cannot override existing column values. So we only remove deleted columns if there
+                    // is a CF level tombstone to ensure the delete makes it into an SSTable.
+                    ColumnFamilyStore.removeDeletedColumnsOnly(cf, Integer.MIN_VALUE);
+                }
+                writer.append(entry.getKey(), cf);
+            }
 
             ssTable = writer.closeAndOpenReader();
         }

@@ -24,8 +24,10 @@ import java.nio.charset.CharacterCodingException;
 import java.util.*;
 
 import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.ConfigurationException;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.gms.VersionedValue;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
@@ -136,6 +138,12 @@ public class OrderPreservingPartitioner implements IPartitioner<StringToken>
             return stringToken.token;
         }
 
+        public void validate(String token) throws ConfigurationException
+        {
+            if (token.contains(VersionedValue.DELIMITER_STR))
+                throw new ConfigurationException("Tokens may not contain the character " + VersionedValue.DELIMITER_STR);
+        }
+
         public Token<String> fromString(String string)
         {
             return new StringToken(string);
@@ -188,7 +196,7 @@ public class OrderPreservingPartitioner implements IPartitioner<StringToken>
                 for (Range r : sortedRanges)
                 {
                     // Looping over every KS:CF:Range, get the splits size and add it to the count
-                    allTokens.put(r.right, allTokens.get(r.right) + StorageService.instance.getSplits(ks, cfmd.cfName, r, 1).size());
+                    allTokens.put(r.right, allTokens.get(r.right) + StorageService.instance.getSplits(ks, cfmd.cfName, r, DatabaseDescriptor.getIndexInterval()).size());
                 }
             }
         }

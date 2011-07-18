@@ -24,14 +24,15 @@ package org.apache.cassandra.db;
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.util.Collection;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.io.ICompactSerializer2;
 import org.apache.cassandra.io.ICompactSerializer3;
+import org.apache.cassandra.io.sstable.SSTableMetadata;
 
 public class ColumnFamilySerializer implements ICompactSerializer3<ColumnFamily>
 {
@@ -97,13 +98,13 @@ public class ColumnFamilySerializer implements ICompactSerializer3<ColumnFamily>
 
     public void serializeCFInfo(ColumnFamily columnFamily, DataOutput dos) throws IOException
     {
-        dos.writeInt(columnFamily.localDeletionTime.get());
-        dos.writeLong(columnFamily.markedForDeleteAt.get());
+        dos.writeInt(columnFamily.getLocalDeletionTime());
+        dos.writeLong(columnFamily.getMarkedForDeleteAt());
     }
 
-    public int serializeWithIndexes(ColumnFamily columnFamily, DataOutput dos)
+    public int serializeWithIndexes(ColumnFamily columnFamily, ColumnIndexer.RowHeader index, DataOutput dos)
     {
-        ColumnIndexer.serialize(columnFamily, dos);
+        ColumnIndexer.serialize(index, dos);
         return serializeForSSTable(columnFamily, dos);
     }
 
@@ -130,6 +131,12 @@ public class ColumnFamilySerializer implements ICompactSerializer3<ColumnFamily>
     public void deserializeColumns(DataInput dis, ColumnFamily cf, boolean intern, boolean fromRemote) throws IOException
     {
         int size = dis.readInt();
+        deserializeColumns(dis, cf, size, intern, fromRemote);
+    }
+
+    /* column count is already read from DataInput */
+    public void deserializeColumns(DataInput dis, ColumnFamily cf, int size, boolean intern, boolean fromRemote) throws IOException
+    {
         ColumnFamilyStore interner = intern ? Table.open(CFMetaData.getCF(cf.id()).left).getColumnFamilyStore(cf.id()) : null;
         for (int i = 0; i < size; ++i)
         {
@@ -147,5 +154,19 @@ public class ColumnFamilySerializer implements ICompactSerializer3<ColumnFamily>
     public long serializedSize(ColumnFamily cf)
     {
         return cf.serializedSize();
+    }
+
+    /**
+     * Observes columns in a single row, without adding them to the column family.
+     */
+    public void observeColumnsInSSTable(CFMetaData cfm, RandomAccessFile dis, SSTableMetadata.Collector sstableMetadataCollector) throws IOException
+    {
+        int size = dis.readInt();
+        sstableMetadataCollector.addColumnCount(size);
+        for (int i = 0; i < size; ++i)
+        {
+            IColumn column = cfm.getColumnSerializer().deserialize(dis);
+            sstableMetadataCollector.updateMaxTimestamp(column.maxTimestamp());
+        }
     }
 }

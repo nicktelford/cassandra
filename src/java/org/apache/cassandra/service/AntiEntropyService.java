@@ -41,6 +41,7 @@ import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.Table;
 import org.apache.cassandra.dht.AbstractBounds;
+import org.apache.cassandra.dht.RandomPartitioner;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.gms.FailureDetector;
 import org.apache.cassandra.io.ICompactSerializer;
@@ -167,7 +168,7 @@ public class AntiEntropyService
         if (!replicaSets.containsKey(range))
             return Collections.emptySet();
         Set<InetAddress> neighbors = new HashSet<InetAddress>(replicaSets.get(range));
-        neighbors.remove(FBUtilities.getLocalAddress());
+        neighbors.remove(FBUtilities.getBroadcastAddress());
         // Excluding all node with version <= 0.7 since they don't know how to
         // create a correct merkle tree (they build it over the full range)
         Iterator<InetAddress> iter = neighbors.iterator();
@@ -188,7 +189,7 @@ public class AntiEntropyService
      */
     private void rendezvous(TreeRequest request, MerkleTree tree)
     {
-        InetAddress LOCAL = FBUtilities.getLocalAddress();
+        InetAddress LOCAL = FBUtilities.getBroadcastAddress();
 
         // the rendezvous pairs for this session
         Map<TreeRequest, TreePair> ctrees = rendezvousPairs(request.sessionid);
@@ -312,28 +313,36 @@ public class AntiEntropyService
 
         public void prepare(ColumnFamilyStore cfs)
         {
-            List<DecoratedKey> keys = new ArrayList<DecoratedKey>();
-            for (DecoratedKey sample : cfs.keySamples(request.range))
+            if (tree.partitioner() instanceof RandomPartitioner)
             {
-                assert request.range.contains(sample.token);
-                keys.add(sample);
-            }
-
-            if (keys.isEmpty())
-            {
-                // use an even tree distribution
+                // You can't beat an even tree distribution for md5
                 tree.init();
             }
             else
             {
-                int numkeys = keys.size();
-                Random random = new Random();
-                // sample the column family using random keys from the index 
-                while (true)
+                List<DecoratedKey> keys = new ArrayList<DecoratedKey>();
+                for (DecoratedKey sample : cfs.keySamples(request.range))
                 {
-                    DecoratedKey dk = keys.get(random.nextInt(numkeys));
-                    if (!tree.split(dk.token))
-                        break;
+                    assert request.range.contains(sample.token);
+                    keys.add(sample);
+                }
+
+                if (keys.isEmpty())
+                {
+                    // use an even tree distribution
+                    tree.init();
+                }
+                else
+                {
+                    int numkeys = keys.size();
+                    Random random = new Random();
+                    // sample the column family using random keys from the index
+                    while (true)
+                    {
+                        DecoratedKey dk = keys.get(random.nextInt(numkeys));
+                        if (!tree.split(dk.token))
+                            break;
+                    }
                 }
             }
             logger.debug("Prepared AEService tree of size " + tree.size() + " for " + request);
@@ -416,7 +425,7 @@ public class AntiEntropyService
         public void run()
         {
             // respond to the request that triggered this validation
-            AntiEntropyService.instance.respond(this, FBUtilities.getLocalAddress());
+            AntiEntropyService.instance.respond(this, FBUtilities.getBroadcastAddress());
         }
     }
 
@@ -443,7 +452,7 @@ public class AntiEntropyService
          */
         public void run()
         {
-            InetAddress local = FBUtilities.getLocalAddress();
+            InetAddress local = FBUtilities.getBroadcastAddress();
 
             // restore partitioners (in case we were serialized)
             if (ltree.partitioner() == null)
@@ -540,7 +549,7 @@ public class AntiEntropyService
                 ByteArrayOutputStream bos = new ByteArrayOutputStream();
                 DataOutputStream dos = new DataOutputStream(bos);
                 SERIALIZER.serialize(request, dos, version);
-                return new Message(FBUtilities.getLocalAddress(), StorageService.Verb.TREE_REQUEST, bos.toByteArray(), version);
+                return new Message(FBUtilities.getBroadcastAddress(), StorageService.Verb.TREE_REQUEST, bos.toByteArray(), version);
             }
             catch(IOException e)
             {
@@ -802,7 +811,7 @@ public class AntiEntropyService
                     for (InetAddress endpoint : endpoints)
                         requests.put(AntiEntropyService.instance.request(getName(), endpoint, range, tablename, cfname), this);
                     // send but don't record an outstanding request to the local node
-                    AntiEntropyService.instance.request(getName(), FBUtilities.getLocalAddress(), range, tablename, cfname);
+                    AntiEntropyService.instance.request(getName(), FBUtilities.getBroadcastAddress(), range, tablename, cfname);
                 }
                 logger.info("Waiting for repair requests: " + requests.keySet());
                 requestsMade.signalAll();

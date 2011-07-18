@@ -31,19 +31,18 @@ import java.util.*;
 import java.util.Map.Entry;
 import java.util.concurrent.ExecutionException;
 
-import org.apache.cassandra.db.compaction.CompactionInfo;
-import org.apache.cassandra.utils.Pair;
-import org.apache.cassandra.config.ConfigurationException;
-
 import org.apache.commons.cli.*;
 
 import org.apache.cassandra.cache.InstrumentingCacheMBean;
 import org.apache.cassandra.concurrent.JMXEnabledThreadPoolExecutorMBean;
+import org.apache.cassandra.config.ConfigurationException;
 import org.apache.cassandra.db.ColumnFamilyStoreMBean;
+import org.apache.cassandra.db.compaction.CompactionInfo;
 import org.apache.cassandra.db.compaction.CompactionManagerMBean;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.net.MessagingServiceMBean;
 import org.apache.cassandra.utils.EstimatedHistogram;
+import org.apache.cassandra.utils.Pair;
 
 public class NodeCmd
 {
@@ -80,7 +79,7 @@ public class NodeCmd
         DECOMMISSION, MOVE, REMOVETOKEN, REPAIR, CLEANUP, COMPACT, SCRUB,
         SETCACHECAPACITY, GETCOMPACTIONTHRESHOLD, SETCOMPACTIONTHRESHOLD, NETSTATS, CFHISTOGRAMS,
         COMPACTIONSTATS, DISABLEGOSSIP, ENABLEGOSSIP, INVALIDATEKEYCACHE, INVALIDATEROWCACHE,
-        DISABLETHRIFT, ENABLETHRIFT, STATUSTHRIFT, JOIN, SETCOMPACTIONTHROUGHPUT
+        DISABLETHRIFT, ENABLETHRIFT, STATUSTHRIFT, JOIN, SETCOMPACTIONTHROUGHPUT, GETENDPOINTS
     }
 
     
@@ -126,6 +125,9 @@ public class NodeCmd
         addCmdHelp(header, "invalidaterowcache [keyspace] [cfnames]", "Invalidate the key cache of one or more column family");
         addCmdHelp(header, "getcompactionthreshold <keyspace> <cfname>", "Print min and max compaction thresholds for a given column family");
         addCmdHelp(header, "cfhistograms <keyspace> <cfname>", "Print statistic histograms for a given column family");
+
+        // Three args
+        addCmdHelp(header, "getendpoints <keyspace> <cf> <key>", "Print the end points that owns the key");
 
         // Four args
         addCmdHelp(header, "setcachecapacity <keyspace> <cfname> <keycachecapacity> <rowcachecapacity>", "Set the key and row cache capacities of a given column family");
@@ -235,6 +237,10 @@ public class NodeCmd
                         threadPoolProxy.getCurrentlyBlockedTasks(),
                         threadPoolProxy.getTotalBlockedTasks());
         }
+
+        outs.printf("%n%-20s%10s%n", "Message type", "Dropped");
+        for (Entry<String, Integer> entry : probe.getDroppedMessages().entrySet())
+            outs.printf("%-20s%10s%n", entry.getKey(), entry.getValue());
     }
 
     /**
@@ -245,7 +251,7 @@ public class NodeCmd
     public void printInfo(PrintStream outs)
     {
         boolean gossipInitialized = probe.isInitialized();
-        outs.println(probe.getToken());
+        outs.printf("%-17s: %s%n", "Token", probe.getToken());
         outs.printf("%-17s: %s%n", "Gossip active", gossipInitialized);
         outs.printf("%-17s: %s%n", "Load", probe.getLoadString());
         if (gossipInitialized)
@@ -266,6 +272,9 @@ public class NodeCmd
         // Data Center/Rack
         outs.printf("%-17s: %s%n", "Data Center", probe.getDataCenter());
         outs.printf("%-17s: %s%n", "Rack", probe.getRack());
+
+        // Exceptions
+        outs.printf("%-17s: %s%n", "Exceptions", probe.getExceptionCount());
     }
 
     public void printReleaseVersion(PrintStream outs)
@@ -326,7 +335,7 @@ public class NodeCmd
             }
         }
 
-        MessagingServiceMBean ms = probe.getMsProxy();
+        MessagingServiceMBean ms = probe.msProxy;
         outs.printf("%-25s", "Pool Name");
         outs.printf("%10s", "Active");
         outs.printf("%10s", "Pending");
@@ -351,26 +360,22 @@ public class NodeCmd
             completed += n;
         outs.printf("%-25s%10s%10s%15s%n", "Responses", "n/a", pending, completed);
     }
-   
+
     public void printCompactionStats(PrintStream outs)
     {
         CompactionManagerMBean cm = probe.getCompactionManagerProxy();
+        outs.println("pending tasks: " + cm.getPendingTasks());
+        if (cm.getCompactions().size() > 0)
+            outs.printf("%25s%16s%16s%16s%16s%10s%n", "compaction type", "keyspace", "column family", "bytes compacted", "bytes total", "progress");
         for (CompactionInfo c : cm.getCompactions())
         {
-            outs.println("compaction type: " + c.getTaskType());
-            outs.println("keyspace: " + c.getKeyspace());
-            outs.println("column family: " + c.getColumnFamily());
-            outs.println("bytes compacted: " + c.getBytesComplete());
-            outs.println("bytes total: " + c.getTotalBytes());
             String percentComplete = c.getTotalBytes() == 0
                                    ? "n/a"
-                                   : new DecimalFormat("#.##").format((double) c.getBytesComplete() / c.getTotalBytes() * 100) + "%";
-            outs.println("compaction progress: " + percentComplete);
-            outs.println("-----------------");
+                                   : new DecimalFormat("0.00").format((double) c.getBytesComplete() / c.getTotalBytes() * 100) + "%";
+            outs.printf("%25s%16s%16s%16s%16s%10s%n", c.getTaskType(), c.getKeyspace(), c.getColumnFamily(), c.getBytesComplete(), c.getTotalBytes(), percentComplete);
         }
-        outs.println("pending tasks: " + cm.getPendingTasks());
     }
- 
+
     public void printColumnFamilyStats(PrintStream outs)
     {
         Map <String, List <ColumnFamilyStoreMBean>> cfstoreMap = new HashMap <String, List <ColumnFamilyStoreMBean>>();
@@ -442,6 +447,7 @@ public class NodeCmd
                 outs.println("\t\tSSTable count: " + cfstore.getLiveSSTableCount());
                 outs.println("\t\tSpace used (live): " + cfstore.getLiveDiskSpaceUsed());
                 outs.println("\t\tSpace used (total): " + cfstore.getTotalDiskSpaceUsed());
+                outs.println("\t\tNumber of Keys (estimate): " + cfstore.estimateKeys());				
                 outs.println("\t\tMemtable Columns Count: " + cfstore.getMemtableColumnsCount());
                 outs.println("\t\tMemtable Data Size: " + cfstore.getMemtableDataSize());
                 outs.println("\t\tMemtable Switch Count: " + cfstore.getMemtableSwitchCount());
@@ -517,6 +523,16 @@ public class NodeCmd
                                          (i < rrlh.length ? rwlh[i] : ""),
                                          (i < ersh.length ? ersh[i] : ""),
                                          (i < ecch.length ? ecch[i] : "")));
+        }
+    }
+
+    private void printEndPoints(String keySpace, String cf, String key, PrintStream output)
+    {
+        List<InetAddress> endpoints = this.probe.getEndpoints(keySpace, cf, key);
+
+        for (InetAddress anEndpoint : endpoints)
+        {
+           output.println(anEndpoint.getHostAddress());
         }
     }
 
@@ -678,6 +694,11 @@ public class NodeCmd
                 probe.setCompactionThreshold(arguments[0], arguments[1], minthreshold, maxthreshold);
                 break;
 
+            case GETENDPOINTS :
+                if (arguments.length != 3) { badUse("getendpoints requires ks, cf and key args"); }
+                nodeCmd.printEndPoints(arguments[0], arguments[1], arguments[2], System.out);
+                break;
+
             default :
                 throw new RuntimeException("Unreachable code.");
 
@@ -698,6 +719,15 @@ public class NodeCmd
         System.err.println(errStr);
         e.printStackTrace();
         System.exit(3);
+    }
+    
+    private static void complainNonzeroArgs(String[] args, NodeCommand cmd)
+    {
+        if (args.length > 0) {
+            System.err.println("Too many arguments for command '"+cmd.toString()+"'.");
+            printUsage();
+            System.exit(1);
+        }
     }
 
     private static void handleSnapshots(NodeCommand nc, String tag, String[] cmdArgs, NodeProbe probe) throws InterruptedException, IOException

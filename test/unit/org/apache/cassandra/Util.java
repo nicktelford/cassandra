@@ -32,6 +32,7 @@ import java.util.concurrent.Future;
 
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.compaction.CompactionManager;
+import org.apache.cassandra.db.compaction.CompactionTask;
 import org.apache.cassandra.db.columniterator.IdentityQueryFilter;
 import org.apache.cassandra.db.filter.QueryFilter;
 import org.apache.cassandra.db.filter.QueryPath;
@@ -102,8 +103,13 @@ public class Util
     
     public static List<Row> getRangeSlice(ColumnFamilyStore cfs) throws IOException, ExecutionException, InterruptedException
     {
+        return getRangeSlice(cfs, null);
+    }
+
+    public static List<Row> getRangeSlice(ColumnFamilyStore cfs, ByteBuffer superColumn) throws IOException, ExecutionException, InterruptedException
+    {
         Token min = StorageService.getPartitioner().getMinimumToken();
-        return cfs.getRangeSlice(null,
+        return cfs.getRangeSlice(superColumn,
                                  new Bounds(min, min),
                                  10000,
                                  new IdentityQueryFilter());
@@ -198,6 +204,13 @@ public class Util
         for (SSTableReader sstable : cfs.getSSTables())
             descriptors.add(sstable.descriptor);
         return CompactionManager.instance.submitUserDefined(cfs, descriptors, Integer.MAX_VALUE);
+    }
+
+    public static void compact(ColumnFamilyStore cfs, Collection<SSTableReader> sstables, boolean forceDeserialize) throws IOException
+    {
+        CompactionTask task = new CompactionTask(cfs, sstables, (int) (System.currentTimeMillis() / 1000) - cfs.metadata.getGcGraceSeconds());
+        task.isUserDefined(forceDeserialize).compactionFileLocation(cfs.table.getDataFileLocation(1));
+        task.execute(null);
     }
 
 }

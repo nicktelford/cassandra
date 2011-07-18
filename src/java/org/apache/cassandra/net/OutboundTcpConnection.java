@@ -30,6 +30,7 @@ import java.nio.ByteBuffer;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
+import org.apache.cassandra.gms.Gossiper;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -138,6 +139,9 @@ public class OutboundTcpConnection extends Thread
             output = null;
             socket = null;
         }
+
+        // when we see the node again, try to connect at the most recent protocol we know about
+        Gossiper.instance.resetVersion(endpoint);
     }
 
     private ByteBuffer take()
@@ -165,9 +169,10 @@ public class OutboundTcpConnection extends Thread
             try
             {
                 // zero means 'bind on any available port.'
-                if (DatabaseDescriptor.getEncryptionOptions().internode_encryption == EncryptionOptions.InternodeEncryption.all)
+                EncryptionOptions options = DatabaseDescriptor.getEncryptionOptions();
+                if (options != null && options.internode_encryption == EncryptionOptions.InternodeEncryption.all)
                 {
-                    socket = SSLFactory.getSocket(DatabaseDescriptor.getEncryptionOptions(), endpoint, DatabaseDescriptor.getStoragePort(), FBUtilities.getLocalAddress(), 0);
+                    socket = SSLFactory.getSocket(options, endpoint, DatabaseDescriptor.getStoragePort(), FBUtilities.getLocalAddress(), 0);
                 }
                 else {
                     socket = new Socket(endpoint, DatabaseDescriptor.getStoragePort(), FBUtilities.getLocalAddress(), 0);

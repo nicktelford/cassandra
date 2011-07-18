@@ -20,6 +20,7 @@ package org.apache.cassandra.service;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.management.ManagementFactory;
 import java.net.InetAddress;
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -28,6 +29,10 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import javax.management.MBeanServer;
+import javax.management.ObjectName;
 
 import org.apache.cassandra.gms.Gossiper;
 import org.apache.log4j.PropertyConfigurator;
@@ -68,16 +73,36 @@ public abstract class AbstractCassandraDaemon implements CassandraDaemon
         }
         catch (MalformedURLException ex) 
         {
-            // load from the classpath.
+            // then try loading from the classpath.
             configLocation = AbstractCassandraDaemon.class.getClassLoader().getResource(config);
-            if (configLocation == null)
-                throw new RuntimeException("Couldn't figure out log4j configuration.");
         }
-        PropertyConfigurator.configureAndWatch(configLocation.getFile(), 10000);
+        
+        if (configLocation == null)
+            throw new RuntimeException("Couldn't figure out log4j configuration: "+config);
+
+        // Now convert URL to a filename
+        String configFileName = null;
+        try
+        {
+            // first try URL.getFile() which works for opaque URLs (file:foo) and paths without spaces
+            configFileName = configLocation.getFile();
+            File configFile = new File(configFileName);
+            // then try alternative approach which works for all hierarchical URLs with or without spaces
+            if (!configFile.exists())
+                configFileName = new File(configLocation.toURI()).getCanonicalPath();
+        }
+        catch (Exception e)
+        {
+            throw new RuntimeException("Couldn't convert log4j configuration location to a valid file", e);
+        }
+
+        PropertyConfigurator.configureAndWatch(configFileName, 10000);
         org.apache.log4j.Logger.getLogger(AbstractCassandraDaemon.class).info("Logging initialized");
     }
 
     private static Logger logger = LoggerFactory.getLogger(AbstractCassandraDaemon.class);
+
+    static final AtomicInteger exceptions = new AtomicInteger();
     
     protected InetAddress listenAddr;
     protected int listenPort;
@@ -92,23 +117,24 @@ public abstract class AbstractCassandraDaemon implements CassandraDaemon
      */
     protected void setup() throws IOException
     {
+    	logger.info("JVM vendor/version: {}/{}", System.getProperty("java.vm.name"), System.getProperty("java.version") );
         logger.info("Heap size: {}/{}", Runtime.getRuntime().totalMemory(), Runtime.getRuntime().maxMemory());
     	CLibrary.tryMlockall();
 
         listenPort = DatabaseDescriptor.getRpcPort();
         listenAddr = DatabaseDescriptor.getRpcAddress();
-        
         /* 
          * If ThriftAddress was left completely unconfigured, then assume
          * the same default as ListenAddress
          */
         if (listenAddr == null)
             listenAddr = FBUtilities.getLocalAddress();
-        
+
         Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler()
         {
             public void uncaughtException(Thread t, Throwable e)
             {
+                exceptions.incrementAndGet();
                 logger.error("Fatal exception in thread " + t, e);
                 if (e instanceof OutOfMemoryError)
                 {

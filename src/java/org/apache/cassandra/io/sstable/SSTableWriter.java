@@ -28,18 +28,13 @@ import java.util.Set;
 
 import com.google.common.collect.Sets;
 
-import org.apache.cassandra.db.commitlog.ReplayPosition;
-import org.apache.cassandra.db.compaction.*;
-import org.apache.cassandra.utils.ByteBufferUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.db.ColumnFamily;
-import org.apache.cassandra.db.ColumnFamilyStore;
-import org.apache.cassandra.db.DecoratedKey;
-import org.apache.cassandra.db.Table;
+import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.compaction.*;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.io.util.BufferedRandomAccessFile;
 import org.apache.cassandra.io.util.FileMark;
@@ -48,7 +43,7 @@ import org.apache.cassandra.io.util.SegmentedFile;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.streaming.OperationType;
 import org.apache.cassandra.utils.BloomFilter;
-import org.apache.cassandra.utils.EstimatedHistogram;
+import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 
 public class SSTableWriter extends SSTable
@@ -60,24 +55,31 @@ public class SSTableWriter extends SSTable
     private final BufferedRandomAccessFile dataFile;
     private DecoratedKey lastWrittenKey;
     private FileMark dataMark;
+    private SSTableMetadata.Collector sstableMetadataCollector;
 
     public SSTableWriter(String filename, long keyCount) throws IOException
     {
-        this(filename, keyCount, DatabaseDescriptor.getCFMetaData(Descriptor.fromFilename(filename)), StorageService.getPartitioner(), ReplayPosition.NONE);
+        this(filename,
+             keyCount,
+             DatabaseDescriptor.getCFMetaData(Descriptor.fromFilename(filename)),
+             StorageService.getPartitioner(),
+             SSTableMetadata.createCollector());
     }
 
-    public SSTableWriter(String filename, long keyCount, CFMetaData metadata, IPartitioner partitioner, ReplayPosition replayPosition) throws IOException
+    public SSTableWriter(String filename,
+                         long keyCount,
+                         CFMetaData metadata,
+                         IPartitioner partitioner,
+                         SSTableMetadata.Collector sstableMetadataCollector) throws IOException
     {
         super(Descriptor.fromFilename(filename),
               new HashSet<Component>(Arrays.asList(Component.DATA, Component.FILTER, Component.PRIMARY_INDEX, Component.STATS)),
               metadata,
-              replayPosition,
-              partitioner,
-              SSTable.defaultRowHistogram(),
-              SSTable.defaultColumnHistogram());
+              partitioner);
         iwriter = new IndexWriter(descriptor, partitioner, keyCount);
         dbuilder = SegmentedFile.getBuilder(DatabaseDescriptor.getDiskAccessMode());
         dataFile = new BufferedRandomAccessFile(new File(getFilename()), "rw", BufferedRandomAccessFile.DEFAULT_BUFFER_SIZE, true);
+        this.sstableMetadataCollector = sstableMetadataCollector;
     }
     
     public void mark()
@@ -130,8 +132,10 @@ public class SSTableWriter extends SSTable
         long currentPosition = beforeAppend(row.key);
         ByteBufferUtil.writeWithShortLength(row.key.key, dataFile);
         row.write(dataFile);
-        estimatedRowSize.add(dataFile.getFilePointer() - currentPosition);
-        estimatedColumnCount.add(row.columnCount());
+        // max timestamp is not collected here, because we want to avoid deserializing an EchoedRow
+        // instead, it is collected when calling ColumnFamilyStore.createCompactionWriter
+        sstableMetadataCollector.addRowSize(dataFile.getFilePointer() - currentPosition);
+        sstableMetadataCollector.addColumnCount(row.columnCount());
         afterAppend(row.key, currentPosition);
         return currentPosition;
     }
@@ -140,22 +144,21 @@ public class SSTableWriter extends SSTable
     {
         long startPosition = beforeAppend(decoratedKey);
         ByteBufferUtil.writeWithShortLength(decoratedKey.key, dataFile);
-        // write placeholder for the row size, since we don't know it yet
-        long sizePosition = dataFile.getFilePointer();
-        dataFile.writeLong(-1);
-        // write out row data
-        int columnCount = ColumnFamily.serializer().serializeWithIndexes(cf, dataFile);
-        // seek back and write the row size (not including the size Long itself)
-        long endPosition = dataFile.getFilePointer();
-        dataFile.seek(sizePosition);
-        long dataSize = endPosition - (sizePosition + 8);
-        assert dataSize > 0;
-        dataFile.writeLong(dataSize);
-        // finally, reset for next row
-        dataFile.seek(endPosition);
+
+        // serialize index and bloom filter into in-memory structure
+        ColumnIndexer.RowHeader header = ColumnIndexer.serialize(cf);
+
+        // write out row size
+        dataFile.writeLong(header.serializedSize() + cf.serializedSizeForSSTable());
+
+        // write out row header and data
+        int columnCount = ColumnFamily.serializer().serializeWithIndexes(cf, header, dataFile);
         afterAppend(decoratedKey, startPosition);
-        estimatedRowSize.add(endPosition - startPosition);
-        estimatedColumnCount.add(columnCount);
+
+        // track max column timestamp
+        sstableMetadataCollector.updateMaxTimestamp(cf.maxTimestamp());
+        sstableMetadataCollector.addRowSize(dataFile.getFilePointer() - startPosition);
+        sstableMetadataCollector.addColumnCount(columnCount);
     }
 
     public void append(DecoratedKey decoratedKey, ByteBuffer value) throws IOException
@@ -204,7 +207,8 @@ public class SSTableWriter extends SSTable
         FileUtils.truncate(dataFile.getPath(), position);
 
         // write sstable statistics
-        writeMetadata(descriptor, estimatedRowSize, estimatedColumnCount, replayPosition);
+        SSTableMetadata sstableMetadata = sstableMetadataCollector.finalizeMetadata();
+        writeMetadata(descriptor, sstableMetadata);
 
         // remove the 'tmp' marker from all components
         final Descriptor newdesc = rename(descriptor, components);
@@ -212,21 +216,28 @@ public class SSTableWriter extends SSTable
         // finalize in-memory state for the reader
         SegmentedFile ifile = iwriter.builder.complete(newdesc.filenameFor(SSTable.COMPONENT_INDEX));
         SegmentedFile dfile = dbuilder.complete(newdesc.filenameFor(SSTable.COMPONENT_DATA));
-        SSTableReader sstable = SSTableReader.internalOpen(newdesc, components, metadata, replayPosition, partitioner, ifile, dfile, iwriter.summary, iwriter.bf, maxDataAge, estimatedRowSize, estimatedColumnCount);
+        SSTableReader sstable = SSTableReader.internalOpen(newdesc,
+                                                           components,
+                                                           metadata,
+                                                           partitioner,
+                                                           ifile,
+                                                           dfile,
+                                                           iwriter.summary,
+                                                           iwriter.bf,
+                                                           maxDataAge,
+                                                           sstableMetadata);
         iwriter = null;
         dbuilder = null;
         return sstable;
     }
 
-    private static void writeMetadata(Descriptor desc, EstimatedHistogram rowSizes, EstimatedHistogram columnCounts, ReplayPosition rp) throws IOException
+    private static void writeMetadata(Descriptor desc, SSTableMetadata sstableMetadata) throws IOException
     {
         BufferedRandomAccessFile out = new BufferedRandomAccessFile(new File(desc.filenameFor(SSTable.COMPONENT_STATS)),
                                                                      "rw",
                                                                      BufferedRandomAccessFile.DEFAULT_BUFFER_SIZE,
                                                                      true);
-        EstimatedHistogram.serializer.serialize(rowSizes, out);
-        EstimatedHistogram.serializer.serialize(columnCounts, out);
-        ReplayPosition.serializer.serialize(rp, out);
+        SSTableMetadata.serializer.serialize(sstableMetadata, out);
         out.close();
     }
 
@@ -257,8 +268,8 @@ public class SSTableWriter extends SSTable
         if (!desc.isLatestVersion)
             // TODO: streaming between different versions will fail: need support for
             // recovering other versions to provide a stable streaming api
-            throw new RuntimeException(String.format("Cannot recover SSTable with version %s (current version %s).",
-                                                     desc.version, Descriptor.CURRENT_VERSION));
+            throw new RuntimeException(String.format("Cannot recover SSTable %s due to version mismatch. (current version is %s).", desc.toString()
+                                                     , Descriptor.CURRENT_VERSION));
 
         return new Builder(desc, type);
     }
@@ -266,6 +277,8 @@ public class SSTableWriter extends SSTable
     /**
      * Removes the given SSTable from temporary status and opens it, rebuilding the
      * bloom filter and row index from the data file.
+     *
+     * TODO remove this post-1.0, we have one-pass streaming now (see IncomingStreamReader)
      */
     public static class Builder implements CompactionInfo.Holder
     {
@@ -374,6 +387,7 @@ public class SSTableWriter extends SSTable
 
         protected IndexWriter iwriter;
         protected ColumnFamilyStore cfs;
+        protected final SSTableMetadata.Collector sstableMetadataCollector = SSTableMetadata.createCollector();
 
         RowIndexer(Descriptor desc, ColumnFamilyStore cfs, OperationType type) throws IOException
         {
@@ -480,11 +494,10 @@ public class SSTableWriter extends SSTable
 
         protected long doIndexing() throws IOException
         {
-            EstimatedHistogram rowSizes = SSTable.defaultRowHistogram();
-            EstimatedHistogram columnCounts = SSTable.defaultColumnHistogram();
             long rows = 0;
             DecoratedKey key;
             long rowPosition = 0;
+            ColumnFamily cf = ColumnFamily.create(cfs.metadata);
             while (rowPosition < dfile.length())
             {
                 // read key
@@ -497,19 +510,23 @@ public class SSTableWriter extends SSTable
 
                 IndexHelper.skipBloomFilter(dfile);
                 IndexHelper.skipIndex(dfile);
-                ColumnFamily.serializer().deserializeFromSSTableNoColumns(ColumnFamily.create(cfs.metadata), dfile);
+                ColumnFamily.serializer().deserializeFromSSTableNoColumns(cf, dfile);
+
+                // We can't simply get the max column timestamp here by calling cf.maxTimestamp() because
+                // the columns have not been deserialized yet. observeColumnsInSSTable() will deserialize
+                // and get the max timestamp instead.
+                ColumnFamily.serializer().observeColumnsInSSTable(cfs.metadata, dfile, sstableMetadataCollector);
 
                 // don't move that statement around, it expects the dfile to be before the columns
                 updateCache(key, dataSize, null);
 
-                rowSizes.add(dataSize);
-                columnCounts.add(dfile.readInt());
+                sstableMetadataCollector.addRowSize(dataSize);
                 
                 dfile.seek(rowPosition);
 
                 rows++;
             }
-            writeMetadata(desc, rowSizes, columnCounts, ReplayPosition.NONE);
+            writeMetadata(desc, sstableMetadataCollector.finalizeMetadata());
             return rows;
         }
 
@@ -543,8 +560,6 @@ public class SSTableWriter extends SSTable
         @Override
         protected long doIndexing() throws IOException
         {
-            EstimatedHistogram rowSizes = SSTable.defaultRowHistogram();
-            EstimatedHistogram columnCounts = SSTable.defaultColumnHistogram();
             long rows = 0L;
             DecoratedKey key;
 
@@ -561,8 +576,9 @@ public class SSTableWriter extends SSTable
                 AbstractCompactedRow row = controller.getCompactedRow(iter);
                 updateCache(key, dataSize, row);
 
-                rowSizes.add(dataSize);
-                columnCounts.add(row.columnCount());
+                sstableMetadataCollector.addRowSize(dataSize);
+                sstableMetadataCollector.addColumnCount(row.columnCount());
+                sstableMetadataCollector.updateMaxTimestamp(row.maxTimestamp());
 
                 // update index writer
                 iwriter.afterAppend(key, writerDfile.getFilePointer());
@@ -572,7 +588,7 @@ public class SSTableWriter extends SSTable
 
                 rows++;
             }
-            writeMetadata(desc, rowSizes, columnCounts, ReplayPosition.NONE);
+            writeMetadata(desc, sstableMetadataCollector.finalizeMetadata());
 
             if (writerDfile.getFilePointer() != dfile.getFilePointer())
             {

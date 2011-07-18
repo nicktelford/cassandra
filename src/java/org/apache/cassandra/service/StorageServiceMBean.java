@@ -86,6 +86,31 @@ public interface StorageServiceMBean
     public String getReleaseVersion();
 
     /**
+     * Get the list of all data file locations from conf
+     * @return String array of all locations
+     */
+    public String[] getAllDataFileLocations();
+
+    /**
+     * Get the list of data file locations for a given keyspace
+     * @param keyspace the keyspace to get locatiosn for.
+     * @return String array of all locations
+     */
+    public String[] getAllDataFileLocationsForTable(String table);
+
+    /**
+     * Get location of the commit log
+     * @return a string path
+     */
+    public String getCommitLogLocation();
+
+    /**
+     * Get location of the saved caches dir
+     * @return a string path
+     */
+    public String getSavedCachesLocation();
+
+    /**
      * Retrieve a map of range to end points that describe the ring topology
      * of a Cassandra cluster.
      *
@@ -130,10 +155,12 @@ public interface StorageServiceMBean
      * This method returns the N endpoints that are responsible for storing the
      * specified key i.e for replication.
      *
+     * @param table keyspace name also known as table
+     * @param cf Column family name
      * @param key - key for which we need to find the endpoint return value -
      * the endpoint responsible for this key
      */
-    public List<InetAddress> getNaturalEndpoints(String table, byte[] key);
+    public List<InetAddress> getNaturalEndpoints(String table, String cf, String key);
     public List<InetAddress> getNaturalEndpoints(String table, ByteBuffer key);
 
     /**
@@ -195,7 +222,7 @@ public interface StorageServiceMBean
      * @param newToken token to move this node to.
      * This node will unload its data onto its neighbors, and bootstrap to the new token.
      */
-    public void move(String newToken) throws IOException, InterruptedException;
+    public void move(String newToken) throws IOException, InterruptedException, ConfigurationException;
 
     /**
      * removeToken removes token (and all data associated with
@@ -288,6 +315,8 @@ public interface StorageServiceMBean
     // allows a node that have been started without joining the ring to join it
     public void joinRing() throws IOException, org.apache.cassandra.config.ConfigurationException;
     public boolean isJoined();
+
+    public int getExceptionCount();
 
     public void setCompactionThroughputMbPerSec(int value);
 

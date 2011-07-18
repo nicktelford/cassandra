@@ -98,6 +98,11 @@ public class Column implements IColumn
         return timestamp;
     }
 
+    public long maxTimestamp()
+    {
+        return timestamp;
+    }
+
     public boolean isMarkedForDelete()
     {
         return false;
@@ -123,7 +128,7 @@ public class Column implements IColumn
          * + 4 bytes which basically indicates the size of the byte array
          * + entire byte array.
         */
-        return DBConstants.shortSize_ + name.remaining() + 1 + DBConstants.tsSize_ + DBConstants.intSize_ + value.remaining();
+        return DBConstants.shortSize + name.remaining() + 1 + DBConstants.tsSize + DBConstants.intSize + value.remaining();
     }
 
     /*

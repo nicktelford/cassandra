@@ -212,7 +212,7 @@ public class RowMutation implements IMutation, MessageProducer
         else if (path.columnName == null)
         {
             SuperColumn sc = new SuperColumn(path.superColumnName, columnFamily.getSubComparator());
-            sc.markForDeleteAt(localDeleteTime, timestamp);
+            sc.delete(localDeleteTime, timestamp);
             columnFamily.addColumn(sc);
         }
         else
@@ -244,7 +244,7 @@ public class RowMutation implements IMutation, MessageProducer
 
     public Message makeRowMutationMessage(StorageService.Verb verb, int version) throws IOException
     {
-        return new Message(FBUtilities.getLocalAddress(), verb, getSerializedBuffer(version), version);
+        return new Message(FBUtilities.getBroadcastAddress(), verb, getSerializedBuffer(version), version);
     }
 
     public synchronized byte[] getSerializedBuffer(int version) throws IOException
