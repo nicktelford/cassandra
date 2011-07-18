@@ -105,21 +105,29 @@ public class RowMutation implements IMutation, MessageProducer
     {
         ByteBuffer mutationId = ByteBuffer.wrap(UUIDGen.getTimeUUIDBytes());
 
+        // determine the TTL for the RowMutation
+        // this is set at the smallest GCGraceSeconds for any of the CFs in the RM
+        // this ensures that deletes aren't "undone" by delivery of an old hint
+        int ttl = Integer.MAX_VALUE;
+        for (ColumnFamily cf : rm.getColumnFamilies()) {
+          ttl = Math.min(ttl, cf.metadata().getGcGraceSeconds());
+        }
+
         // serialized RowMutation
         QueryPath path = new QueryPath(HintedHandOffManager.HINTS_CF, mutationId, ByteBufferUtil.bytes("mutation")); 
-        add(path, ByteBuffer.wrap(rm.getSerializedBuffer(MessagingService.version_)), System.currentTimeMillis(), cf.metadata().getGcGraceSeconds());
+        add(path, ByteBuffer.wrap(rm.getSerializedBuffer(MessagingService.version_)), System.currentTimeMillis(), ttl);
 
         // serialization version
-        QueryPath path = new QueryPath(HintedHandOffManager.HINTS_CF, mutationId, ByteBufferUtil.bytes("version"));
-        add(path, ByteBufferUtil.bytes(MessagingService.version_), System.currentTimeMillis(), cf.metadata().getGcGraceSeconds());
+        path = new QueryPath(HintedHandOffManager.HINTS_CF, mutationId, ByteBufferUtil.bytes("version"));
+        add(path, ByteBufferUtil.bytes(MessagingService.version_), System.currentTimeMillis(), ttl);
 
         // table
-        QueryPath path = new QueryPath(HintedHandOffManager.HINTS_CF, mutationId, ByteBufferUtil.bytes("table"));
-        add(path, rm.getTable(), System.currentTimeMillis(), cf.metadata().getGcGraceSeconds());
+        path = new QueryPath(HintedHandOffManager.HINTS_CF, mutationId, ByteBufferUtil.bytes("table"));
+        add(path, ByteBufferUtil.bytes(rm.getTable()), System.currentTimeMillis(), ttl);
 
         // key
-        QueryPath path = new QueryPath(HintedHandOffManager.HINTS_CF, mutationId, ByteBufferUtil.bytes("table"));
-        add(path, rm.key(), System.currentTimeMillis(), cf.metadata().getGcGraceSeconds());
+        path = new QueryPath(HintedHandOffManager.HINTS_CF, mutationId, ByteBufferUtil.bytes("table"));
+        add(path, rm.key(), System.currentTimeMillis(), ttl);
     }
 
     /*
